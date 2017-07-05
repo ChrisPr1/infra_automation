@@ -2,7 +2,6 @@
 require 'trollop'
 require 'rbvmomi'
 require 'rbvmomi/trollop'
-require 'mm_json_client'
 
 require 'io/console'
 
