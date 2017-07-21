@@ -6,9 +6,6 @@ require 'io/console'
 
 def getopts()
 
-  #initialize password to nil so we can check it later to see if its been set
-  #during Trollop.options call
-
   #Trollop module for rbvmomi has default :user :password :host vcenter required
   #options which we add to in the Customization options
   opts = Trollop.options do
@@ -31,10 +28,10 @@ Clone a VM.
     text <<-EOS
  VM location options:
     EOS
-    opt :datacenter, "Datacenter in vCenter", :short => 'd', :type => :string, :default => "wbdc01"
-    opt :cluster, "vCenter Compute Cluster to deploy VM into", :short => 'c', :type => :string, :default => "VSAN_Cluster01"
+    opt :datacenter, "Datacenter in vCenter", :short => 'd', :type => :string, :default => "Datacenter01"
+    opt :cluster, "vCenter Compute Cluster to deploy VM into", :short => 'c', :type => :string, :default => "Cluster01"
     opt :folder, "Folder+Path in vCenter to deploy this template to", :short => 'f', :type => :string, :default => ""
-    opt :datastore, "Datastore to place VM in", :type => :string, :default => "vsanDatastore"
+    opt :datastore, "Datastore to place VM in", :type => :string, :default => "Datastore01"
     #rbvmomi_datacenter_opt
 
     text <<-EOS
@@ -45,7 +42,7 @@ Clone a VM.
     opt :memoryMB, "Amount of memory in MB allocated to VM", :short => :none, :type => :int, :default => 8192
     opt :disk0_Size, "Size in KBytes of disk 1", :type => :int, :default => 41943040
     opt :osType, "Vcenter OS ID string", :short => 'O', :type => :string, :default => "rhel6_64Guest"
-    opt :networkId, "Network ID/VLAN Name to connect nic 1 to", :short => 'N', :type => :string, :default => "dvSwitch0_vlan100pg"
+    opt :networkId, "Network ID/VLAN Name to connect nic 1 to", :short => 'N', :type => :string, :default => "dvSwitch0_vlan001"
     opt :domainname, "Specify domainname for Guest OS", :short => :none, :type => :string, :default => "foo.com"
     opt :netmask, "Specify Netmask for Guest OS", :short => :none, :type => :string, :default => "255.255.255.0"
     opt :gateway, "Specify Default Gateway address for Guest OS", :short => :none, :type => :string, :default => "192.168.1.1"
@@ -64,7 +61,18 @@ Clone a VM.
 
 end #getops method
 
-def create_vm_config ( hostname, vmware_clientId, cpus, memory, datastore, networkId, disk0_Size )
+
+def create_vm_config ( hostname, vmware_clientId, cpus, memory, datastore, networkObj, disk0_Size )
+
+network_backing = ""
+
+if networkObj.class == VIM::Network
+  network_backing = VIM.VirtualEthernetCardNetworkBackingInfo( deviceName: networkObj.name )
+elsif networkObj.class == VIM::DistributedVirtualPortgroup
+  switch, pg_key = networkObj.collect 'config.distributedVirtualSwitch', 'key'
+  port = RbVmomi::VIM.DistributedVirtualSwitchPortConnection( switchUuid: switch.uuid, portgroupKey: pg_key)
+  network_backing = VIM.VirtualEthernetCardDistributedVirtualPortBackingInfo( port: port )
+end
 
 vm_cfg = {
   name: hostname,
@@ -75,21 +83,13 @@ vm_cfg = {
   deviceChange: [
     {
       operation: :add,
-      device: VIM.ParaVirtualSCSIController(
-        key: 1000,
-        busNumber: 0,
-        sharedBus: :noSharing,
-      )
+      device: VIM.ParaVirtualSCSIController( key: 1000, busNumber: 0, sharedBus: :noSharing,)
     }, {
       operation: :add,
       fileOperation: :create,
       device: VIM.VirtualDisk(
         key: 0,
-        backing: VIM.VirtualDiskFlatVer2BackingInfo(
-          fileName: datastore,
-          diskMode: :persistent,
-          thinProvisioned: true,
-        ),
+        backing: VIM.VirtualDiskFlatVer2BackingInfo( fileName: datastore, diskMode: :persistent, thinProvisioned: true,),
         controllerKey: 1000,
         unitNumber: 0,
         capacityInKB: disk0_Size,
@@ -98,23 +98,12 @@ vm_cfg = {
       operation: :add,
       device: VIM.VirtualVmxnet3(
         key: 0,
-        deviceInfo: {
-          label: 'Network Adapter 1',
-          summary: networkId,
-        },
-        backing: VIM.VirtualEthernetCardNetworkBackingInfo(
-          deviceName: networkId,
-        ),
+        deviceInfo: { label: 'Network Adapter 1', summary: 'Network Adapter 1', },
+        backing: network_backing,
         addressType: 'generated'
       )
     }
 
-  ],
-  extraConfig: [
-    {
-      key: 'bios.bootOrder',
-      value: 'ethernet0'
-    }
   ]
 }
 
@@ -172,7 +161,9 @@ if cluster.class != RbVmomi::VIM::ClusterComputeResource
   abort "ERROR:     Unable to find #{opts[:cluster]} in Datacenter #{opts[:datacenter]}"
 end
 
-vm_config = create_vm_config( hostname, vmware_clientId, cpus, memory, datastore, networkId, disk0_Size )
+networkObj = datacenter.hostFolder.findByInventoryPath("wbdc01/network/#{opts[:networkId]}")
+
+vm_config = create_vm_config( hostname, vmware_clientId, cpus, memory, datastore, networkObj, disk0_Size )
 
 myresourcePool = cluster.resourcePool
 
@@ -182,11 +173,12 @@ if myVM.class != RbVmomi::VIM::VirtualMachine
   abort "ERROR:   VM not created"
 end
 
-#myMacaddress = ""
-#myVM.config.hardware.device.each do |device|
-#  if ((device.class == RbVmomi::VIM::VirtualVmxnet3) && ( device.deviceInfo.label == "Network adapter 1" ))
-#      myMacaddress = device.macAddress
-#  end
-#end
+myMacaddress = ""
 
-#puts myMacaddress
+myVM.config.hardware.device.each do |device|
+  if ((device.class == RbVmomi::VIM::VirtualVmxnet3) && ( device.deviceInfo.label == "Network adapter 1" ))
+      myMacaddress = device.macAddress
+  end
+end
+
+puts myMacaddress
